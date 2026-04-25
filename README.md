@@ -44,7 +44,7 @@ agent/
 ### Prerequisites
 
 - Python 3.10+
-- [Google Gemini API key](https://aistudio.google.com)
+- Google Gemini API key
 
 ### 1. Clone the repository
 
