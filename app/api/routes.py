@@ -2,7 +2,7 @@
 FastAPI route definitions.
 
 POST /ask   — The main endpoint: takes a question, returns an answer.
-GET  /health — Liveness probe (used by hosting platforms).
+GET  /health — Alive check (used by hosting platforms).
 """
 
 from __future__ import annotations
@@ -68,5 +68,5 @@ async def ask(body: AskRequest) -> AskResponse:
 
 @router.get("/health")
 async def health():
-    """Liveness probe — returns 200 if the service is running."""
+    """Alive check - returns 200 if the service is running."""
     return {"status": "ok"}
