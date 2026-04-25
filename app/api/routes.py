@@ -1,7 +1,7 @@
 """
 FastAPI route definitions.
 
-POST /ask   — The main endpoint: takes a question, returns an answer.
+POST /ask — The main endpoint: takes a question, returns an answer.
 GET  /health — Alive check (used by hosting platforms).
 """
 
