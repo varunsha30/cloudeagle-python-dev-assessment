@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from pydantic import BaseModel, Field
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -75,31 +76,32 @@ def _get_llm(temperature: float = 0.0) -> ChatGoogleGenerativeAI:
         temperature=temperature,
     )
 
+class IntentResult(BaseModel):
+    """Structured output schema for the intent parsing node."""
+    country_name: str | None = Field(
+        default=None,
+        description="The country name to look up, e.g. 'Germany'. Null if not found."
+    )
+    requested_fields: list[str] = Field(
+        default_factory=list,
+        description="List of country data fields the user wants, from the supported list."
+    )
+
 
 # Node 1: Intent or Field Identification
 
 INTENT_SYSTEM_PROMPT = """\
-You are a JSON-only intent parser. You extract structured information from \
-country-related questions.
+You are an intent parser for a country-information assistant.
 
-Given a user question, output a single JSON object with these exact keys:
-  "country_name"     : the country name as a search term, or null if not found
-  "requested_fields" : list of field names the user wants (from the list below)
-
-Supported fields: {fields}
+Given a user question:
+1. Extract the country name as a standard search term (e.g. "Germany" not "German").
+2. Extract the fields the user wants from this supported list: {fields}
 
 Rules:
-- Output ONLY the JSON object. No explanation, no markdown, no extra text.
 - Normalise country names: "UK" → "United Kingdom", "USA" → "United States"
-- If no specific fields are mentioned, infer them from context.
-- If the question is not about a country, set country_name to null and \
-requested_fields to [].
-
-Example input:  "What currency does Japan use?"
-Example output: {{"country_name": "Japan", "requested_fields": ["currency"]}}
-
-Example input:  "What is the capital and population of Brazil?"
-Example output: {{"country_name": "Brazil", "requested_fields": ["capital", "population"]}}
+- If no specific fields are mentioned, infer the most relevant ones from context.
+- If the question is not about a country at all, set country_name to null.
+- Only use field names from the supported list above.
 """
 
 async def intent_node(state: AgentState) -> dict:
@@ -115,6 +117,7 @@ async def intent_node(state: AgentState) -> dict:
     logger.info("[intent_node] Parsing: %r", query)
 
     llm = _get_llm(temperature=0.0)
+    structured_llm = llm.with_structured_output(IntentResult)
     messages = [
         SystemMessage(content=INTENT_SYSTEM_PROMPT.format(
             fields=", ".join(ALL_FIELDS)
@@ -123,18 +126,9 @@ async def intent_node(state: AgentState) -> dict:
     ]
 
     try:
-        response = await llm.ainvoke(messages)
-        raw = response.content.strip()
-
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-
-        parsed = json.loads(raw)
-        country_name: str | None = parsed.get("country_name")
-        requested_fields: list[str] = parsed.get("requested_fields", [])
+        result: IntentResult = await structured_llm.ainvoke(messages)
+        country_name = result.country_name
+        requested_fields = result.requested_fields
 
         valid_fields = [f for f in requested_fields if f in FIELD_MAP]
 
@@ -155,7 +149,7 @@ async def intent_node(state: AgentState) -> dict:
             "intent_error": None,
         }
 
-    except (json.JSONDecodeError, KeyError, AttributeError) as exc:
+    except Exception as exc:
         logger.error("[intent_node] Parse failed: %s", exc)
         return {
             "country_name": None,
@@ -278,7 +272,7 @@ async def synthesize_node(state: AgentState) -> dict:
     llm = ChatGoogleGenerativeAI(
         model=settings.gemini_model,
         google_api_key=settings.google_api_key,
-        temperature=0.2,
+        temperature=0.2
     )
 
     user_message = (
