@@ -25,8 +25,8 @@ def build_graph():
 
     # wire edges, simple linear pipeline
     builder.add_edge(START, "intent_node")
-    builder.add_edge("intent_node", "fetch_node")
-    builder.add_edge("fetch_node", "synthesize_node")
+    # builder.add_edge("intent_node", "fetch_node")
+    # builder.add_edge("fetch_node", "synthesize_node")
     builder.add_edge("synthesize_node", END)
 
     return builder.compile()

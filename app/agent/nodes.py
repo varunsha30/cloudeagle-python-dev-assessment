@@ -12,11 +12,12 @@ LangGraph merges it into the state automatically.
 from __future__ import annotations
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.types import Command
 
 from app.agent.state import AgentState
 from app.config import get_settings
@@ -104,7 +105,7 @@ Rules:
 - Only use field names from the supported list above.
 """
 
-async def intent_node(state: AgentState) -> dict:
+async def intent_node(state: AgentState) -> Command[Literal["fetch_node", "synthesize_node"]]:
     """
     Node 1: Intent or Field Identification
 
@@ -133,36 +134,45 @@ async def intent_node(state: AgentState) -> dict:
         valid_fields = [f for f in requested_fields if f in FIELD_MAP]
 
         if not country_name:
-            return {
-                "country_name": None,
-                "requested_fields": [],
-                "intent_error": (
-                    "I couldn't identify a country in your question. "
-                    "Try asking: 'What is the population of France?'"
-                ),
-            }
+            return Command(
+                update={
+                    "country_name": None,
+                    "requested_fields": [],
+                    "intent_error": (
+                        "I couldn't identify a country in your question. "
+                        "Try asking: 'What is the population of France?'"
+                    ),
+                },
+                goto="synthesize_node"
+            )
 
         logger.info("[intent_node] country=%r fields=%r", country_name, valid_fields)
-        return {
-            "country_name": country_name,
-            "requested_fields": valid_fields or ["population", "capital"],
-            "intent_error": None,
-        }
+        return Command(
+            update={
+                "country_name": country_name,
+                "requested_fields": valid_fields or ["population", "capital"],
+                "intent_error": None,
+            },
+            goto="fetch_node"
+        )
 
     except Exception as exc:
         logger.error("[intent_node] Parse failed: %s", exc)
-        return {
-            "country_name": None,
-            "requested_fields": [],
-            "intent_error": (
-                "I had trouble understanding your question. Could you rephrase it?"
-            ),
-        }
+        return Command(
+            update={
+                "country_name": None,
+                "requested_fields": [],
+                "intent_error": (
+                    "I had trouble understanding your question. Could you rephrase it?"
+                ),
+            },
+            goto="synthesize_node"
+        )
 
 
 # Node 2: Tool Invocation (API fetch)
 
-async def fetch_node(state: AgentState) -> dict:
+async def fetch_node(state: AgentState) -> Command[Literal["synthesize_node"]]:
     """
     Node 2: Tool Invocation
 
@@ -170,7 +180,10 @@ async def fetch_node(state: AgentState) -> dict:
     Skips gracefully if intent_node already set an error.
     """
     if state.get("intent_error"):
-        return {"raw_country_data": None, "fetch_error": None}
+        return Command(
+            update={"raw_country_data": None, "fetch_error": None},
+            goto="synthesize_node"
+        )
 
     country_name = state["country_name"]
     logger.info("[fetch_node] Fetching: %r", country_name)
@@ -178,20 +191,29 @@ async def fetch_node(state: AgentState) -> dict:
     try:
         data = await fetch_country(country_name)
         logger.info("[fetch_node] Retrieved %d match(es)", len(data))
-        return {"raw_country_data": data, "fetch_error": None}
+        return Command(
+            update={"raw_country_data": data, "fetch_error": None},
+            goto="synthesize_node"
+        )
 
     except CountryNotFoundError as exc:
-        return {"raw_country_data": None, "fetch_error": str(exc)}
+        return Command(
+            update={"raw_country_data": None, "fetch_error": str(exc)},
+            goto="synthesize_node"
+        )
 
     except CountriesAPIError as exc:
         logger.error("[fetch_node] API error: %s", exc)
-        return {
-            "raw_country_data": None,
-            "fetch_error": (
-                "I'm having trouble reaching the countries database. "
-                "Please try again in a moment."
-            ),
-        }
+        return Command(
+            update={
+                "raw_country_data": None,
+                "fetch_error": (
+                    "I'm having trouble reaching the countries database. "
+                    "Please try again in a moment."
+                ),
+            },
+            goto="synthesize_node"
+        )
 
 
 # Node 3: Answer Synthesis
@@ -250,8 +272,10 @@ async def synthesize_node(state: AgentState) -> dict:
     """
     # Error waterfall
     if state.get("intent_error"):
+        logger.info("[intent_node] Intent Erorr, incorrect intent: %s", state["intent_error"])
         return {"answer": state["intent_error"]}
     if state.get("fetch_error"):
+        logger.info("[fetch_node] Fetch Erorr, could not fetch from API: %s", state["fetch_error"])
         return {"answer": state["fetch_error"]}
 
     raw_data = state.get("raw_country_data")
@@ -288,7 +312,7 @@ async def synthesize_node(state: AgentState) -> dict:
     try:
         response = await llm.ainvoke(messages)
         answer = response.content.strip()
-        logger.info("[synthesize_node] Done")
+        logger.info("[synthesize_node] Found Answer: %s", answer)
         return {"answer": answer}
 
     except Exception as exc:
